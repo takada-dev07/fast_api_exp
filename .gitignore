@@ -169,3 +169,13 @@ logs/
 tmp/
 temp/
 
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!terraform.tfvars.example
+lambda_function.zip
+.terraform.tfstate.lock.info
+
