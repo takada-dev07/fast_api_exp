@@ -14,10 +14,22 @@
 - Terraform >= 1.0 がインストールされていること
 - AWS CLI がインストール・設定されていること
 - IAM Identity Center (SSO) を使用して AWS にアクセスできること
+- `zip` コマンドが利用できること（Lambdaのzip生成に使用）
+- `python3` / `pip` が利用できること（`auth_cognito_test` の依存インストールに使用）
+
+## Lambda の zip 生成について（重要）
+
+この構成では **Terraform 実行時に Lambda の zip を生成**し、生成物は各 Lambda ディレクトリ配下に作られます（ビルド成果物なのでコミット不要です）。
+
+- **hello**: `lambda/hello/hello_function.zip`
+  - `terraform plan/apply` の中で zip が生成されます（`archive_file` データソース）。
+- **auth_cognito_test**: `lambda/auth_cognito_test/auth_cognito_test_function.zip`
+  - `terraform apply` の中で zip が生成されます（依存を `pip install` して同梱）。
+  - zip を手動で削除してしまった場合でも、次回の `terraform apply` で再生成されます。
 
 ## ファイル構成
 
-```
+```text
 .
 ├── infra/
 │   ├── main.tf              # メインリソース定義

@@ -1,0 +1,36 @@
+service: auth-cognito-test
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: python3.12
+  region: ap-northeast-1
+  stage: ${opt:stage, 'dev'}
+
+functions:
+  authCognitoTest:
+    name: ${self:service}-${self:provider.stage}
+    handler: app.lambda_handler
+    description: Unified Lambda function for JWT auth, public and protected endpoints
+    package:
+      patterns:
+        - '!**'
+        - '*.py'
+    environment:
+      ENVIRONMENT: ${self:provider.stage}
+      COGNITO_USER_POOL_ID: ${env:COGNITO_USER_POOL_ID, ''}
+      APP_AWS_REGION: ${self:provider.region}
+
+package:
+  patterns:
+    - '!**'
+    - '*.py'
+
+plugins:
+  - serverless-python-requirements
+
+custom:
+  pythonRequirements:
+    dockerizePip: non-linux
+    zip: true

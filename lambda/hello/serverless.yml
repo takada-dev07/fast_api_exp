@@ -1,0 +1,26 @@
+service: hello-vpc
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: python3.11
+  region: ap-northeast-1
+  stage: ${opt:stage, 'dev'}
+
+functions:
+  hello:
+    name: hello-vpc  # AWS Lambda関数名を指定
+    handler: app.lambda_handler
+    description: Hello VPC Lambda function
+    package:
+      patterns:
+        - '!**'
+        - '*.py'
+    environment:
+      ENVIRONMENT: ${self:provider.stage}
+
+package:
+  patterns:
+    - '!**'
+    - '*.py'

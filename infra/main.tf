@@ -3,12 +3,42 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
+# Local paths for Lambda artifacts (store zips under each lambda directory)
+locals {
+  hello_zip_path             = "${abspath(path.module)}/../lambda/hello/hello_function.zip"
+  auth_cognito_test_zip_path = "${abspath(path.module)}/../lambda/auth_cognito_test/auth_cognito_test_function.zip"
+}
+
 # Archive Lambda function code
 data "archive_file" "lambda_zip" {
   type        = "zip"
-  source_file = "${path.module}/../lambda/hello/app.py"
-  output_path = "${path.module}/lambda_function.zip"
+  source_file = "${abspath(path.module)}/../lambda/hello/app.py"
+  output_path = local.hello_zip_path
 }
+
+# Package Lambda Auth Cognito Test with dependencies
+resource "null_resource" "auth_cognito_test_package" {
+  triggers = {
+    app_code     = filebase64sha256("${abspath(path.module)}/../lambda/auth_cognito_test/app.py")
+    requirements = filebase64sha256("${abspath(path.module)}/../lambda/auth_cognito_test/requirements.txt")
+    # If the local zip was deleted, force re-run on next apply.
+    zip_sha256 = try(filesha256(local.auth_cognito_test_zip_path), "")
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      set -euo pipefail && \
+      TEMP_DIR=$(mktemp -d) && \
+      OUT_ZIP="${abspath(path.module)}/../lambda/auth_cognito_test/auth_cognito_test_function.zip" && \
+      cp "${abspath(path.module)}/../lambda/auth_cognito_test/app.py" "$TEMP_DIR/" && \
+      pip install -r "${abspath(path.module)}/../lambda/auth_cognito_test/requirements.txt" -t "$TEMP_DIR" --quiet && \
+      cd "$TEMP_DIR" && \
+      zip -r "$OUT_ZIP" . -q && \
+      rm -rf "$TEMP_DIR"
+    EOT
+  }
+}
+
 
 # IAM role for Lambda
 resource "aws_iam_role" "lambda_role" {
@@ -164,6 +194,13 @@ resource "aws_lambda_function" "hello_vpc" {
   filename         = data.archive_file.lambda_zip.output_path
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
 
+  lifecycle {
+    precondition {
+      condition     = fileexists("${abspath(path.module)}/../lambda/hello/app.py")
+      error_message = "Missing Lambda source: lambda/hello/app.py"
+    }
+  }
+
   # VPC configuration (only if enable_vpc is true)
   dynamic "vpc_config" {
     for_each = var.enable_vpc ? [1] : []
@@ -220,6 +257,205 @@ resource "aws_lambda_permission" "api_gateway_invoke" {
   statement_id  = "AllowAPIGatewayInvoke"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.hello_vpc.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.hello_vpc_api.execution_arn}/*/*"
+}
+
+# ============================================
+# Cognito Resources
+# ============================================
+
+# Cognito User Pool
+resource "aws_cognito_user_pool" "main" {
+  name = "${var.project_name}-user-pool"
+
+  # Password policy
+  password_policy {
+    minimum_length    = 8
+    require_lowercase = true
+    require_uppercase = true
+    require_numbers   = true
+    require_symbols   = false
+  }
+
+  # User attributes
+  schema {
+    name                = "email"
+    attribute_data_type = "String"
+    required            = true
+    mutable             = true
+  }
+
+  schema {
+    name                = "name"
+    attribute_data_type = "String"
+    required            = false
+    mutable             = true
+  }
+
+  # Auto verify email
+  auto_verified_attributes = ["email"]
+
+  # NOTE:
+  # Cognito User Pool schema cannot be modified after creation.
+  # If schema blocks change (or provider reads defaults differently), apply will fail.
+  # Keep schema applied at create-time, and ignore later diffs.
+  lifecycle {
+    ignore_changes = [schema]
+  }
+
+  tags = local.common_tags
+}
+
+# Cognito User Pool Client
+resource "aws_cognito_user_pool_client" "main" {
+  name         = "${var.project_name}-client"
+  user_pool_id = aws_cognito_user_pool.main.id
+
+  # OAuth settings
+  generate_secret                      = false
+  allowed_oauth_flows                  = ["code", "implicit"]
+  allowed_oauth_scopes                 = ["email", "openid", "profile"]
+  allowed_oauth_flows_user_pool_client = true
+  supported_identity_providers         = ["COGNITO"]
+
+  # Callback URLs (adjust as needed)
+  callback_urls = ["http://localhost:3000/callback"]
+  logout_urls   = ["http://localhost:3000/logout"]
+
+  # Token validity
+  id_token_validity      = 60
+  access_token_validity  = 60
+  refresh_token_validity = 30
+
+  # NOTE:
+  # Provider v5+ defaults access/id token units to "hours".
+  # 60 without units becomes 60 hours and exceeds the 24h limit.
+  token_validity_units {
+    access_token  = "minutes"
+    id_token      = "minutes"
+    refresh_token = "days"
+  }
+}
+
+# ============================================
+# Auth Cognito Test Lambda Function (Unified)
+# ============================================
+
+# CloudWatch Log Group for Auth Cognito Test
+resource "aws_cloudwatch_log_group" "auth_cognito_test_logs" {
+  name              = "/aws/lambda/${var.project_name}-auth-cognito-test"
+  retention_in_days = var.log_retention_days
+
+  tags = local.common_tags
+}
+
+# Unified Lambda function (Authorizer + Public + Protected endpoints)
+resource "aws_lambda_function" "auth_cognito_test" {
+  function_name = "${var.project_name}-auth-cognito-test"
+  role          = aws_iam_role.lambda_role.arn
+  handler       = "app.lambda_handler"
+  runtime       = "python3.12"
+  filename      = local.auth_cognito_test_zip_path
+  # NOTE:
+  # The zip is created by a local-exec (null_resource) at apply time, so it may not
+  # exist during `terraform plan`. Hash the real inputs instead to keep plan working
+  # and still trigger updates when code/deps change.
+  source_code_hash = base64sha256(join("", [
+    filesha256("${abspath(path.module)}/../lambda/auth_cognito_test/app.py"),
+    filesha256("${abspath(path.module)}/../lambda/auth_cognito_test/requirements.txt"),
+  ]))
+
+  timeout = 30
+
+  lifecycle {
+    precondition {
+      condition     = fileexists("${abspath(path.module)}/../lambda/auth_cognito_test/app.py")
+      error_message = "Missing Lambda source: lambda/auth_cognito_test/app.py"
+    }
+    precondition {
+      condition     = fileexists("${abspath(path.module)}/../lambda/auth_cognito_test/requirements.txt")
+      error_message = "Missing requirements: lambda/auth_cognito_test/requirements.txt"
+    }
+  }
+
+  environment {
+    variables = {
+      COGNITO_USER_POOL_ID = aws_cognito_user_pool.main.id
+      # NOTE: AWS_REGION is a reserved environment variable key in Lambda.
+      # Use an application-specific key instead.
+      APP_AWS_REGION = var.aws_region
+    }
+  }
+
+  depends_on = [
+    null_resource.auth_cognito_test_package,
+    aws_iam_role_policy.lambda_logs,
+    aws_cloudwatch_log_group.auth_cognito_test_logs
+  ]
+
+  tags = local.common_tags
+}
+
+# ============================================
+# API Gateway Authorizer
+# ============================================
+
+# Lambda Authorizer for API Gateway (using unified function)
+resource "aws_apigatewayv2_authorizer" "lambda_authorizer" {
+  api_id          = aws_apigatewayv2_api.hello_vpc_api.id
+  authorizer_type = "REQUEST"
+  # HTTP API REQUEST authorizer requires payload format version.
+  # This project currently returns an IAM policy (payload format 1.0).
+  authorizer_payload_format_version = "1.0"
+  authorizer_uri                    = aws_lambda_function.auth_cognito_test.invoke_arn
+  identity_sources                  = ["$request.header.Authorization"]
+  name                              = "${var.project_name}-lambda-authorizer"
+}
+
+# Lambda permission for Authorizer
+resource "aws_lambda_permission" "authorizer_invoke" {
+  statement_id  = "AllowAPIGatewayInvokeAuthorizer"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.auth_cognito_test.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.hello_vpc_api.execution_arn}/authorizers/${aws_apigatewayv2_authorizer.lambda_authorizer.id}"
+}
+
+# ============================================
+# API Gateway Routes for Auth Endpoints
+# ============================================
+
+# API Gateway integration for unified Lambda (used for both public and protected)
+resource "aws_apigatewayv2_integration" "auth_cognito_test_integration" {
+  api_id = aws_apigatewayv2_api.hello_vpc_api.id
+
+  integration_type   = "AWS_PROXY"
+  integration_uri    = aws_lambda_function.auth_cognito_test.invoke_arn
+  integration_method = "POST"
+}
+
+# API Gateway route for Public endpoint
+resource "aws_apigatewayv2_route" "public_route" {
+  api_id    = aws_apigatewayv2_api.hello_vpc_api.id
+  route_key = "GET /public"
+  target    = "integrations/${aws_apigatewayv2_integration.auth_cognito_test_integration.id}"
+}
+
+# API Gateway route for Protected endpoint (with authorizer)
+resource "aws_apigatewayv2_route" "protected_route" {
+  api_id             = aws_apigatewayv2_api.hello_vpc_api.id
+  route_key          = "GET /protected"
+  target             = "integrations/${aws_apigatewayv2_integration.auth_cognito_test_integration.id}"
+  authorizer_id      = aws_apigatewayv2_authorizer.lambda_authorizer.id
+  authorization_type = "CUSTOM"
+}
+
+# Lambda permission for unified function
+resource "aws_lambda_permission" "auth_cognito_test_invoke" {
+  statement_id  = "AllowAPIGatewayInvokeAuthCognitoTest"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.auth_cognito_test.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.hello_vpc_api.execution_arn}/*/*"
 }
