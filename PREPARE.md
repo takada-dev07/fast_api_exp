@@ -24,6 +24,9 @@ terraform apply
 - `cognito_hosted_ui_base_url`
 - `cognito_user_pool_client_id`
 - `api_protected_endpoint`
+- `ui_base_url`（CloudFront で配信される UI の URL）
+- `ui_callback_url`（Cognito に登録される callback URL）
+- `ui_logout_url`（Cognito に登録される logout URL）
 
 例:
 
@@ -39,6 +42,7 @@ cd infra
 terraform output -raw cognito_hosted_ui_base_url
 terraform output -raw cognito_user_pool_client_id
 terraform output -raw api_protected_endpoint
+terraform output -raw ui_base_url
 ```
 
 ## 3) Cognito にユーザーを追加する
@@ -76,10 +80,22 @@ aws cognito-idp admin-set-user-password \
   --permanent
 ```
 
-## 4) ローカル検証UIの `config.js` に outputs を反映する
+## 4) 検証UIの準備（CloudFront 推奨 / ローカルは任意）
 
-ローカル検証UI（`ui/hosted_ui_local/`）は静的ファイルで、
-環境ごとの値は `ui/hosted_ui_local/config.js` に手で設定します。
+### A. CloudFront（推奨）
+
+Terraform apply 後、S3+CloudFront に UI が自動デプロイされます（`config.js` も Terraform が生成して配置します）。
+
+```bash
+cd infra
+open "$(terraform output -raw ui_base_url)"
+```
+
+以降はブラウザ上で `Login (Hosted UI)` → `Call /protected` を実行して確認します。
+
+### B. ローカル（任意・併用可能）
+
+ローカル検証UI（`ui/hosted_ui_local/`）は静的ファイルで、環境ごとの値は `ui/hosted_ui_local/config.js` に手で設定します。
 
 `ui/hosted_ui_local/config.js` の以下を埋めてください:
 
@@ -94,7 +110,7 @@ aws cognito-idp admin-set-user-password \
 
 これらは Terraform 側の Cognito User Pool Client 設定（callback/logout URLs）と一致している必要があります。
 
-## 5) UI をローカルで起動する
+## 5) UI をローカルで起動する（任意）
 
 `http://localhost:3000` で `ui/hosted_ui_local/` を配信します。
 

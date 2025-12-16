@@ -103,3 +103,27 @@ output "api_protected_endpoint" {
   description = "API Gateway Protected endpoint URL"
   value       = "${aws_apigatewayv2_api.hello_vpc_api.api_endpoint}/protected"
 }
+
+# ============================================
+# UI (S3 + CloudFront) Outputs
+# ============================================
+
+output "ui_cloudfront_domain_name" {
+  description = "CloudFront domain name for the hosted UI"
+  value       = aws_cloudfront_distribution.ui.domain_name
+}
+
+output "ui_base_url" {
+  description = "Base URL for the hosted UI"
+  value       = "https://${aws_cloudfront_distribution.ui.domain_name}"
+}
+
+output "ui_callback_url" {
+  description = "Callback URL to register in Cognito and use in the UI"
+  value       = "https://${aws_cloudfront_distribution.ui.domain_name}/callback.html"
+}
+
+output "ui_logout_url" {
+  description = "Logout URL to register in Cognito and use in the UI"
+  value       = "https://${aws_cloudfront_distribution.ui.domain_name}/logout.html"
+}

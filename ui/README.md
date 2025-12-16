@@ -1,7 +1,12 @@
 # ui/
 
-このディレクトリは **Cognito Hosted UI（Authorization Code + PKCE）** をローカルで動かして、
+このディレクトリは **Cognito Hosted UI（Authorization Code + PKCE）** を使って、
 取得した **Access Token** で API Gateway の `/protected` を呼び出すまでを検証するための静的UIです。
+
+この UI は以下のどちらでも配信できます：
+
+- **CloudFront + S3（推奨）**: Terraform apply 後に AWS 上へ自動デプロイして検証
+- **ローカル静的ホスト**: `python -m http.server` などで配信して検証（従来どおり）
 
 ## 何ができる？
 
@@ -19,9 +24,22 @@
 - `pkce.js`: PKCE（S256）のヘルパー
 - `callback.html`: code + state を受け取り token 交換して `sessionStorage` に保存
 - `logout.html`: `sessionStorage` をクリア
-- `config.js`: 環境に依存する値（Terraform outputs から貼り付け）
+- `config.js`: 環境に依存する値
+  - **CloudFront**: Terraform が生成した `config.js` が配信される（手作業不要）
+  - **ローカル**: `ui/hosted_ui_local/config.js` を手で編集（従来どおり）
 
 ## 事前準備（Terraform outputs を config.js に反映）
+
+### A. CloudFront（推奨）
+
+Terraform 適用後に、CloudFront の URL を開きます：
+
+```bash
+cd infra
+open "$(terraform output -raw ui_base_url)"
+```
+
+### B. ローカル（任意）
 
 Terraform 適用後に、`infra/outputs.tf` の値を `ui/hosted_ui_local/config.js` に反映します。
 

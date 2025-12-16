@@ -46,11 +46,16 @@ fast_api_exp/
 - **Protected Endpoint** (`/protected`): 認証が必要なエンドポイント
 - JWTトークンの検証とユーザー情報の取得
 
-### 3. Hosted UI（Authorization Code + PKCE）をローカルで検証
+### 3. Hosted UI（Authorization Code + PKCE）を検証（CloudFront 推奨）
 
 - Cognito Hosted UI でログイン（Authorization Code + PKCE）
 - ブラウザから `oauth2/token` にコード交換してトークン取得（PKCE）
 - 取得した **Access Token** で `/protected` を呼び出して認証の疎通確認
+
+検証 UI は以下のどちらでも実行できます：
+
+- **CloudFront + S3（推奨）**: `terraform output -raw ui_base_url` をブラウザで開いて検証
+- **ローカル**: `python -m http.server 3000 --directory ui/hosted_ui_local` で配信して検証
 
 ### 3. インフラ管理
 
@@ -82,4 +87,4 @@ fast_api_exp/
 
 - [Terraform詳細](./infra/README_TERRAFORM.md)
 - [Cognito認証テスト詳細](./lambda/auth_cognito_test/README.md)
-- [Hosted UI ローカル検証UI](./ui/README.md)
+- [Hosted UI 検証UI（CloudFront/ローカル）](./ui/README.md)
