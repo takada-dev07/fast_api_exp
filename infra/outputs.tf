@@ -52,6 +52,30 @@ output "cognito_user_pool_endpoint" {
   value       = aws_cognito_user_pool.main.endpoint
 }
 
+locals {
+  cognito_hosted_ui_base_url = "https://${aws_cognito_user_pool_domain.hosted_ui.domain}.auth.${var.aws_region}.amazoncognito.com"
+}
+
+output "cognito_hosted_ui_base_url" {
+  description = "Cognito Hosted UI base URL"
+  value       = local.cognito_hosted_ui_base_url
+}
+
+output "cognito_hosted_ui_authorize_endpoint" {
+  description = "Cognito Hosted UI /oauth2/authorize endpoint"
+  value       = "${local.cognito_hosted_ui_base_url}/oauth2/authorize"
+}
+
+output "cognito_hosted_ui_token_endpoint" {
+  description = "Cognito Hosted UI /oauth2/token endpoint"
+  value       = "${local.cognito_hosted_ui_base_url}/oauth2/token"
+}
+
+output "cognito_hosted_ui_logout_endpoint" {
+  description = "Cognito Hosted UI /logout endpoint"
+  value       = "${local.cognito_hosted_ui_base_url}/logout"
+}
+
 # ============================================
 # Auth Cognito Test Lambda Outputs
 # ============================================

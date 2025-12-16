@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Callback</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; }
+      pre { white-space: pre-wrap; word-break: break-word; background: #f6f8fa; padding: 12px; border-radius: 8px; }
+      a { display: inline-block; margin-top: 12px; }
+    </style>
+  </head>
+  <body>
+    <h2>Callback</h2>
+    <div>このページは Hosted UI からリダイレクトされます。</div>
+
+    <h3>status</h3>
+    <pre id="status">processing...</pre>
+
+    <h3>token exchange result</h3>
+    <pre id="result"></pre>
+
+    <a href="/">Back to /</a>
+
+    <script src="./config.js"></script>
+    <script src="./pkce.js"></script>
+    <script>
+      function getConfig() {
+        if (!window.APP_CONFIG) throw new Error('Missing APP_CONFIG. Edit config.js first.');
+        return window.APP_CONFIG;
+      }
+
+      function setStatus(v) {
+        document.getElementById('status').textContent = v;
+      }
+
+      function setResult(v) {
+        document.getElementById('result').textContent = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+      }
+
+      function mustGetParam(name) {
+        const v = new URLSearchParams(window.location.search).get(name);
+        if (!v) throw new Error(`Missing query param: ${name}`);
+        return v;
+      }
+
+      async function main() {
+        const cfg = getConfig();
+
+        const code = mustGetParam('code');
+        const state = mustGetParam('state');
+
+        const expectedState = sessionStorage.getItem('pkce_state');
+        const verifier = sessionStorage.getItem('pkce_verifier');
+
+        if (!expectedState || state !== expectedState) throw new Error('State mismatch');
+        if (!verifier) throw new Error('Missing PKCE verifier in sessionStorage');
+
+        const tokenUrl = cfg.cognitoBaseUrl.replace(/\/$/, '') + '/oauth2/token';
+
+        const body = new URLSearchParams({
+          grant_type: 'authorization_code',
+          client_id: cfg.clientId,
+          code,
+          redirect_uri: cfg.redirectUri,
+          code_verifier: verifier,
+        });
+
+        const resp = await fetch(tokenUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body,
+        });
+
+        const text = await resp.text();
+        let data;
+        try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
+        if (!resp.ok) {
+          setResult({ status: resp.status, data });
+          throw new Error('Token exchange failed');
+        }
+
+        if (!data.id_token) throw new Error('No id_token in token response');
+        if (!data.access_token) throw new Error('No access_token in token response');
+
+        sessionStorage.setItem('id_token', data.id_token);
+        sessionStorage.setItem('access_token', data.access_token);
+        setResult({
+          ok: true,
+          received: Object.keys(data),
+          note: 'id_token and access_token saved to sessionStorage',
+        });
+        setStatus('OK. You can go back to / and call /protected (uses access_token).');
+      }
+
+      main().catch((e) => {
+        setStatus(String(e));
+      });
+    </script>
+  </body>
+</html>

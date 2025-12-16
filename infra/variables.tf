@@ -28,6 +28,12 @@ variable "log_retention_days" {
   default     = 7
 }
 
+variable "allowed_origins" {
+  description = "Allowed origins for API Gateway CORS (e.g., localhost and CloudFront domains)"
+  type        = list(string)
+  default     = ["http://localhost:3000"]
+}
+
 locals {
   common_tags = {
     project = var.project_name

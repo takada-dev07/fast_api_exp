@@ -6,6 +6,21 @@ from jose import jwt
 from jose.exceptions import JWTError
 
 
+def get_authorizer_context(request_context: dict) -> dict:
+    """
+    Normalize API Gateway authorizer context across payload formats.
+
+    - HTTP API Lambda authorizer (payload 2.0) commonly stores custom context under:
+        requestContext.authorizer.lambda
+    - Other formats may store it directly under:
+        requestContext.authorizer
+    """
+    authorizer = (request_context or {}).get("authorizer", {}) or {}
+    if isinstance(authorizer, dict) and isinstance(authorizer.get("lambda"), dict):
+        return authorizer["lambda"]
+    return authorizer
+
+
 def lambda_handler(event, context):
     """
     Unified Lambda function for:
@@ -35,6 +50,8 @@ def handle_authorizer(event, context):
     """
     # Get Cognito User Pool ID from environment variable
     user_pool_id = os.environ.get("COGNITO_USER_POOL_ID")
+    # Used to validate client_id claim for access token
+    user_pool_client_id = os.environ.get("COGNITO_USER_POOL_CLIENT_ID")
     # NOTE:
     # AWS_REGION is a reserved env var key for Lambda and cannot be set via CreateFunction/UpdateFunctionConfiguration.
     # Prefer APP_AWS_REGION, but keep AWS_REGION as a fallback for other runtimes/tools.
@@ -91,13 +108,26 @@ def handle_authorizer(event, context):
             raise JWTError("Unable to find a matching key")
 
         # Verify and decode the token
+        # NOTE:
+        # For Cognito access tokens, audience verification is not reliable across setups.
+        # We disable aud verification and instead validate the client_id claim.
         claims = jwt.decode(
             token,
             key,
             algorithms=["RS256"],
-            audience=None,  # Cognito tokens don't always have audience
             issuer=f"https://cognito-idp.{region}.amazonaws.com/{user_pool_id}",
+            options={"verify_aud": False},
         )
+
+        # Ensure we only accept access tokens in this sample
+        token_use = claims.get("token_use")
+        if token_use != "access":
+            raise JWTError(f"Invalid token_use: {token_use}")
+
+        # Validate the token was issued for our app client
+        token_client_id = claims.get("client_id")
+        if user_pool_client_id and token_client_id != user_pool_client_id:
+            raise JWTError("Invalid client_id")
 
         # Extract user information from claims
         principal_id = claims.get("sub", "user")
@@ -106,11 +136,13 @@ def handle_authorizer(event, context):
         method_arn = event.get("methodArn", event.get("routeArn", "*"))
         policy = generate_policy(principal_id, "Allow", method_arn)
 
-        # Add context with user information
+        # Add context with user information (access token has limited claims)
         policy["context"] = {
             "sub": claims.get("sub", ""),
-            "email": claims.get("email", ""),
-            "cognito:username": claims.get("cognito:username", ""),
+            "client_id": claims.get("client_id", ""),
+            "scope": claims.get("scope", ""),
+            "username": claims.get("username", "")
+            or claims.get("cognito:username", ""),
         }
 
         return policy
@@ -131,9 +163,16 @@ def handle_api_request(event, context):
     """
     Handle regular API Gateway requests
     """
-    request_context = event.get("requestContext", {})
-    http_info = request_context.get("http", {})
-    path = http_info.get("path", "")
+    # Support both HTTP API payload format 2.0 and older/other formats
+    request_context = event.get("requestContext", {}) or {}
+    http_info = request_context.get("http", {}) or {}
+    path = (
+        http_info.get("path")
+        or event.get("rawPath")
+        or event.get("path")
+        or request_context.get("path")
+        or ""
+    )
 
     # Route based on path
     if path == "/public" or path.endswith("/public"):
@@ -152,8 +191,15 @@ def handle_public_endpoint(event, context):
     """
     Public endpoint - No authentication required
     """
-    request_context = event.get("requestContext", {})
-    path = request_context.get("http", {}).get("path", "/public")
+    request_context = event.get("requestContext", {}) or {}
+    http_info = request_context.get("http", {}) or {}
+    path = (
+        http_info.get("path")
+        or event.get("rawPath")
+        or event.get("path")
+        or request_context.get("path")
+        or "/public"
+    )
 
     return {
         "statusCode": 200,
@@ -174,14 +220,30 @@ def handle_protected_endpoint(event, context):
     """
     Protected endpoint - Authentication required
     """
-    request_context = event.get("requestContext", {})
-    authorizer = request_context.get("authorizer", {})
+    request_context = event.get("requestContext", {}) or {}
+    auth_ctx = get_authorizer_context(request_context)
+
+    # Debug: print authorizer structure when needed
+    if os.environ.get("DEBUG_AUTHORIZER_CONTEXT") == "1":
+        print(
+            "authorizer_raw=",
+            json.dumps(request_context.get("authorizer", {}), ensure_ascii=False),
+        )
+        print("authorizer_ctx=", json.dumps(auth_ctx, ensure_ascii=False))
 
     # Get user information from authorizer context
-    user_sub = authorizer.get("sub", "unknown")
-    user_email = authorizer.get("email", "")
-    username = authorizer.get("cognito:username", "")
-    path = request_context.get("http", {}).get("path", "/protected")
+    user_sub = auth_ctx.get("sub", "unknown")
+    client_id = auth_ctx.get("client_id", "")
+    scope = auth_ctx.get("scope", "")
+    username = auth_ctx.get("username", "")
+    http_info = request_context.get("http", {}) or {}
+    path = (
+        http_info.get("path")
+        or event.get("rawPath")
+        or event.get("path")
+        or request_context.get("path")
+        or "/protected"
+    )
 
     return {
         "statusCode": 200,
@@ -192,7 +254,12 @@ def handle_protected_endpoint(event, context):
         "body": json.dumps(
             {
                 "message": "This is a protected endpoint - authentication successful",
-                "user": {"sub": user_sub, "email": user_email, "username": username},
+                "user": {
+                    "sub": user_sub,
+                    "username": username,
+                    "client_id": client_id,
+                    "scope": scope,
+                },
                 "path": path,
             }
         ),

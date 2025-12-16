@@ -224,6 +224,12 @@ resource "aws_apigatewayv2_api" "hello_vpc_api" {
   protocol_type = "HTTP"
   description   = "HTTP API for ${var.project_name} Lambda function"
 
+  cors_configuration {
+    allow_origins = var.allowed_origins
+    allow_methods = ["GET", "OPTIONS"]
+    allow_headers = ["authorization", "content-type"]
+  }
+
   tags = local.common_tags
 }
 
@@ -231,9 +237,10 @@ resource "aws_apigatewayv2_api" "hello_vpc_api" {
 resource "aws_apigatewayv2_integration" "lambda_integration" {
   api_id = aws_apigatewayv2_api.hello_vpc_api.id
 
-  integration_type   = "AWS_PROXY"
-  integration_uri    = aws_lambda_function.hello_vpc.invoke_arn
-  integration_method = "POST"
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.hello_vpc.invoke_arn
+  integration_method     = "POST"
+  payload_format_version = "2.0"
 }
 
 # API Gateway route
@@ -314,14 +321,14 @@ resource "aws_cognito_user_pool_client" "main" {
 
   # OAuth settings
   generate_secret                      = false
-  allowed_oauth_flows                  = ["code", "implicit"]
+  allowed_oauth_flows                  = ["code"]
   allowed_oauth_scopes                 = ["email", "openid", "profile"]
   allowed_oauth_flows_user_pool_client = true
   supported_identity_providers         = ["COGNITO"]
 
   # Callback URLs (adjust as needed)
-  callback_urls = ["http://localhost:3000/callback"]
-  logout_urls   = ["http://localhost:3000/logout"]
+  callback_urls = ["http://localhost:3000/callback.html"]
+  logout_urls   = ["http://localhost:3000/logout.html"]
 
   # Token validity
   id_token_validity      = 60
@@ -336,6 +343,20 @@ resource "aws_cognito_user_pool_client" "main" {
     id_token      = "minutes"
     refresh_token = "days"
   }
+}
+
+# Cognito Hosted UI Domain (unique prefix with random suffix)
+resource "random_id" "cognito_domain_suffix" {
+  byte_length = 3
+}
+
+locals {
+  cognito_domain_prefix = "${var.project_name}-auth-${random_id.cognito_domain_suffix.hex}"
+}
+
+resource "aws_cognito_user_pool_domain" "hosted_ui" {
+  domain       = local.cognito_domain_prefix
+  user_pool_id = aws_cognito_user_pool.main.id
 }
 
 # ============================================
@@ -381,7 +402,10 @@ resource "aws_lambda_function" "auth_cognito_test" {
 
   environment {
     variables = {
-      COGNITO_USER_POOL_ID = aws_cognito_user_pool.main.id
+      COGNITO_USER_POOL_ID        = aws_cognito_user_pool.main.id
+      COGNITO_USER_POOL_CLIENT_ID = aws_cognito_user_pool_client.main.id
+      # Debug flag to print requestContext.authorizer structures
+      DEBUG_AUTHORIZER_CONTEXT = "0"
       # NOTE: AWS_REGION is a reserved environment variable key in Lambda.
       # Use an application-specific key instead.
       APP_AWS_REGION = var.aws_region
@@ -430,9 +454,10 @@ resource "aws_lambda_permission" "authorizer_invoke" {
 resource "aws_apigatewayv2_integration" "auth_cognito_test_integration" {
   api_id = aws_apigatewayv2_api.hello_vpc_api.id
 
-  integration_type   = "AWS_PROXY"
-  integration_uri    = aws_lambda_function.auth_cognito_test.invoke_arn
-  integration_method = "POST"
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.auth_cognito_test.invoke_arn
+  integration_method     = "POST"
+  payload_format_version = "2.0"
 }
 
 # API Gateway route for Public endpoint
